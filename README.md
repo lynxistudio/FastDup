@@ -6,7 +6,9 @@
 
 **FastDup** is a lightweight, native macOS application built with SwiftUI for finding and managing duplicate files in large local folders and mounted NAS/network volumes. It's designed for practical, fast cleanup with a focus on user safety and performance.
 
-![FastDup App Icon](Assets/FastDupIcon-1024.png)
+<p align="center">
+  <img src="Assets/FastDupIcon-1024.png" width="128" alt="FastDup App Icon">
+</p>
 
 ## 🚀 Quick Start
 
