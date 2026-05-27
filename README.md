@@ -128,7 +128,7 @@ FastDup/
 
 MIT License. See [LICENSE](LICENSE) for full details.
 
-Copyright © 2026 FastDup Contributors
+Copyright © 2026 [Lynxistudio](https://lynxistudio.com) - All rights reserved.
 
 ## 🤝 Contributing
 
