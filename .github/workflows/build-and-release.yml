@@ -1,0 +1,68 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Xcode
+      run: |
+        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        xcodebuild -version
+    
+    - name: Build FastDup
+      run: |
+        chmod +x scripts/build_app.sh
+        ./scripts/build_app.sh
+        
+        # Verify the built app
+        ls -la FastDup.app/
+        codesign -dv FastDup.app
+    
+    - name: Create release package
+      run: |
+        mkdir -p dist
+        VERSION=${GITHUB_REF#refs/tags/v}
+        ZIP_NAME="FastDup-${VERSION}-macOS.zip"
+        
+        # Create zip with proper structure
+        ditto -c -k --sequesterRsrc --keepParent FastDup.app "dist/${ZIP_NAME}"
+        
+        # Generate SHA256 checksum
+        cd dist
+        shasum -a 256 "${ZIP_NAME}" > "SHA256SUMS.txt"
+        cat SHA256SUMS.txt
+        
+        # Create release notes template
+        echo "# FastDup v${VERSION}" > "RELEASE_NOTES_v${VERSION}.md"
+        echo "" >> "RELEASE_NOTES_v${VERSION}.md"
+        echo "## What's New" >> "RELEASE_NOTES_v${VERSION}.md"
+        echo "" >> "RELEASE_NOTES_v${VERSION}.md"
+        echo "- Update release notes here" >> "RELEASE_NOTES_v${VERSION}.md"
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: fastdup-build
+        path: |
+          dist/
+          FastDup.app/
+    
+    - name: Create GitHub Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/*
+        generate_release_notes: true
+        prerelease: false

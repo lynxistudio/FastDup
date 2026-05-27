@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+*.swp
+*.swo
+
+# Build outputs
+build/
+dist/
+DerivedData/
+.build/
+FastDup
+FastDup.app/
+FastDup_old.app/
+*.dSYM/
+
+# Local databases and logs
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.log
+
+# Xcode user state
+*.xcuserstate
+xcuserdata/
+
+# Temporary files
+tmp/
+.tmp/
