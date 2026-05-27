@@ -134,12 +134,15 @@ Releases are created when:
 2. Critical bugs are fixed
 3. A new version milestone is reached
 
-The release process:
-1. Update version in `Info.plist`
+The current release process is manual:
+1. Update the `VERSION` and `BUILD` values in `scripts/build_app.sh`
 2. Update `CHANGELOG.md`
-3. Create a git tag: `git tag v1.2.0`
-4. Push the tag: `git push origin v1.2.0`
-5. GitHub Actions will automatically build and create a release
+3. Build the app: `./scripts/build_app.sh`
+4. Package `FastDup.app` as a zip file
+5. Create a GitHub Release for the new version tag
+6. Upload the zip file and checksum file as release assets
+
+Automated GitHub Actions releases may be added in the future.
 
 ## 🤔 Questions?
 
