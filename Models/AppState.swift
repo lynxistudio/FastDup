@@ -55,6 +55,7 @@ final class AppState: ObservableObject {
     @Published var totalFilesScanned = 0
     @Published var totalDuplicateGroups = 0
     @Published var resultsViewMode: ResultsViewMode = .list
+    @Published var preservedFileIDs: [UUID: UUID] = [:]
 
     let scanner = FileScanner()
     let db = DatabaseManager()
@@ -106,6 +107,7 @@ final class AppState: ObservableObject {
         if monitoredDirectories.isEmpty {
             duplicateGroups = []
             groupMap = [:]
+            preservedFileIDs = [:]
             selectedFileIDs = []
             focusedFileID = nil
         }
@@ -115,6 +117,7 @@ final class AppState: ObservableObject {
         monitoredDirectories.removeAll()
         duplicateGroups = []
         groupMap = [:]
+        preservedFileIDs = [:]
         selectedFileIDs = []
         focusedFileID = nil
         scanStatus = .idle
@@ -133,6 +136,7 @@ final class AppState: ObservableObject {
         scanStatus = .scanning
         duplicateGroups = []
         groupMap = [:]
+        preservedFileIDs = [:]
         db.deleteFiles(inScanRoots: monitoredDirectories)
         totalFilesScanned = 0
         totalDuplicateGroups = 0
@@ -172,21 +176,35 @@ final class AppState: ObservableObject {
         let allFiles = ([file] + matches).filter { seen.insert($0.path).inserted }.sorted { $0.path < $1.path }
         guard allFiles.count >= 2 else { return false }
 
-        // Merge into existing group if any path overlaps
-        let allPaths = Set(allFiles.map { $0.path })
-        if let targetIdx = duplicateGroups.firstIndex(where: { group in
+        // Merge every overlapping group. A file can match multiple files as the
+        // streaming scan grows, so merging only the first overlap leaves stale
+        // duplicate rows that can later trigger repeated delete attempts.
+        let allPaths = Set(allFiles.map(\.path))
+        let overlappingGroups = groupMap.values.filter { group in
             group.files.contains(where: { allPaths.contains($0.path) })
-        }) {
-            var merged = duplicateGroups[targetIdx]
-            let existingPaths = Set(merged.files.map { $0.path })
-            let newcomers = allFiles.filter { !existingPaths.contains($0.path) }
-            if !newcomers.isEmpty {
-                merged.files.append(contentsOf: newcomers)
-                merged.files.sort { $0.path < $1.path }
-                groupMap[merged.id] = merged
+        }
+        if let firstGroup = overlappingGroups.first {
+            var merged = firstGroup
+            var filesByPath = Dictionary(uniqueKeysWithValues: merged.files.map { ($0.path, $0) })
+            let previousPathCount = filesByPath.count
+
+            for group in overlappingGroups {
+                for existingFile in group.files where filesByPath[existingFile.path] == nil {
+                    filesByPath[existingFile.path] = existingFile
+                }
+                if group.id != merged.id {
+                    groupMap.removeValue(forKey: group.id)
+                }
             }
-            if !newcomers.isEmpty, publishImmediately { publishDuplicateGroups() }
-            return !newcomers.isEmpty
+            for newFile in allFiles where filesByPath[newFile.path] == nil {
+                filesByPath[newFile.path] = newFile
+            }
+
+            merged.files = filesByPath.values.sorted { $0.path < $1.path }
+            groupMap[merged.id] = merged
+            let changed = filesByPath.count != previousPathCount || overlappingGroups.count > 1
+            if changed, publishImmediately { publishDuplicateGroups() }
+            return changed
         }
 
         // Brand new group
@@ -214,11 +232,64 @@ final class AppState: ObservableObject {
     // MARK: - Selection
 
     func toggleSelection(_ id: UUID) {
+        if let group = duplicateGroups.first(where: { $0.files.contains(where: { $0.id == id }) }),
+           fileToPreserve(in: group)?.id == id {
+            return
+        }
         if selectedFileIDs.contains(id) { selectedFileIDs.remove(id) } else { selectedFileIDs.insert(id) }
     }
+
+    func fileToPreserve(in group: DuplicateGroup) -> FileItem? {
+        if let preservedID = preservedFileIDs[group.id],
+           let file = group.files.first(where: { $0.id == preservedID }) {
+            return file
+        }
+        return group.fileToPreserve
+    }
+
+    func isPreserved(_ file: FileItem, in group: DuplicateGroup) -> Bool {
+        fileToPreserve(in: group)?.id == file.id
+    }
+
+    func duplicateFiles(in group: DuplicateGroup) -> [FileItem] {
+        guard let keep = fileToPreserve(in: group) else { return [] }
+        return group.files.filter { $0.id != keep.id }
+    }
+
+    func savingsFormatted(for group: DuplicateGroup) -> String {
+        let savings = duplicateFiles(in: group).reduce(0) { $0 + Int64($1.size) }
+        return ByteCountFormatter.string(fromByteCount: savings, countStyle: .file)
+    }
+
+    func setFileToPreserve(_ fileID: UUID, in groupId: UUID) {
+        guard let group = duplicateGroups.first(where: { $0.id == groupId }),
+              group.files.contains(where: { $0.id == fileID }) else { return }
+
+        let previousDeletableIDs = Set(duplicateFiles(in: group).map(\.id))
+        let previouslySelectedInGroup = selectedFileIDs.intersection(Set(group.files.map(\.id)))
+        let wasAutoSelected = !previousDeletableIDs.isEmpty && previousDeletableIDs.isSubset(of: selectedFileIDs)
+
+        preservedFileIDs[groupId] = fileID
+
+        let groupIDs = Set(group.files.map(\.id))
+        selectedFileIDs.subtract(groupIDs)
+        if wasAutoSelected {
+            for file in duplicateFiles(in: group) {
+                selectedFileIDs.insert(file.id)
+            }
+        } else {
+            for id in previouslySelectedInGroup where id != fileID {
+                selectedFileIDs.insert(id)
+            }
+            selectedFileIDs.remove(fileID)
+        }
+
+        logDelete("[Keep] group \(group.id.uuidString.prefix(8)) keep: \(fileID)")
+    }
+
     func selectAllInGroup(_ groupId: UUID) {
         guard let group = duplicateGroups.first(where: { $0.id == groupId }) else { return }
-        for file in group.duplicateFiles { selectedFileIDs.insert(file.id) }
+        for file in duplicateFiles(in: group) { selectedFileIDs.insert(file.id) }
     }
     func deselectAllInGroup(_ groupId: UUID) {
         guard let group = duplicateGroups.first(where: { $0.id == groupId }) else { return }
@@ -227,11 +298,11 @@ final class AppState: ObservableObject {
     func selectAllDuplicatesExceptOnePerGroup() {
         selectedFileIDs.removeAll()
         for group in duplicateGroups {
-            let keepFile = group.fileToPreserve
+            let keepFile = fileToPreserve(in: group)
             if let kf = keepFile {
                 logDelete("[SelectDups] group \(group.id.uuidString.prefix(8)) keep: \(kf.name)")
             }
-            for file in group.duplicateFiles {
+            for file in duplicateFiles(in: group) {
                 selectedFileIDs.insert(file.id)
                 logDelete("[SelectDups]   select: \(file.name)")
             }
@@ -274,25 +345,40 @@ final class AppState: ObservableObject {
 
     private func deleteSelectedNow() async {
         let deletionIDs = safeDeletionIDs(from: selectedFileIDs)
-        let filesToDelete = allFiles.filter { deletionIDs.contains($0.id) }
+        let filesToDelete = uniqueFilesByPath(allFiles.filter { deletionIDs.contains($0.id) })
         logDelete("=== deleteSelected: \(filesToDelete.count) files, selectedFileIDs count: \(selectedFileIDs.count) ===")
+        deleteError = nil
         trashUndoStack.removeAll()
         var errors: [String] = []
+        var removedPaths = Set<String>()
         var recycleFallbackFiles: [FileItem] = []
         var recycleFallbackErrors: [UUID: Error] = [:]
         for file in filesToDelete {
+            guard FileManager.default.fileExists(atPath: file.path) else {
+                logDelete("ALREADY GONE: \(file.path)")
+                removedPaths.insert(file.path)
+                continue
+            }
             do {
                 let trashURL = try moveFileToTrashQuietly(file)
                 trashUndoStack.append((file, file.url, trashURL))
+                removedPaths.insert(file.path)
             } catch {
-                recycleFallbackFiles.append(file)
-                recycleFallbackErrors[file.id] = error
+                if FileManager.default.fileExists(atPath: file.path) {
+                    recycleFallbackFiles.append(file)
+                    recycleFallbackErrors[file.id] = error
+                } else {
+                    logDelete("ALREADY GONE after trash attempt: \(file.path)")
+                    removedPaths.insert(file.path)
+                }
             }
         }
 
         if !recycleFallbackFiles.isEmpty {
             let fallbackResult = await recycleWithWorkspace(recycleFallbackFiles, originalErrors: recycleFallbackErrors)
             trashUndoStack.append(contentsOf: fallbackResult.moved.map { (file: $0.file, originalURL: $0.file.url, trashURL: $0.trashURL) })
+            removedPaths.formUnion(fallbackResult.moved.map { $0.file.path })
+            removedPaths.formUnion(fallbackResult.alreadyMissing.map(\.path))
             errors.append(contentsOf: fallbackResult.errors)
         }
 
@@ -300,10 +386,9 @@ final class AppState: ObservableObject {
             deleteError = errors.joined(separator: "\n")
             logDelete("ERRORS: \(deleteError!)")
         }
-        let deletedIDs = Set(trashUndoStack.map { $0.file.id })
-        db.deleteFiles(paths: trashUndoStack.map { $0.file.path })
-        logDelete("Successfully deleted \(trashUndoStack.count)/\(filesToDelete.count) files")
-        removeDeletedFilesFromResults(deletedIDs)
+        db.deleteFiles(paths: Array(removedPaths))
+        logDelete("Successfully handled \(removedPaths.count)/\(filesToDelete.count) unique paths")
+        removeDeletedFilesFromResults(paths: removedPaths)
         selectedFileIDs.removeAll()
         focusedFileID = nil
         showDeleteConfirmation = false
@@ -314,12 +399,21 @@ final class AppState: ObservableObject {
     }
 
     private func deleteSingleFileNow(_ file: FileItem) async {
+        deleteError = nil
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            logDelete("ALREADY GONE: \(file.path)")
+            db.deleteFiles(paths: [file.path])
+            removeDeletedFilesFromResults(paths: [file.path])
+            selectedFileIDs.remove(file.id)
+            focusedFileID = nil
+            return
+        }
         do {
             trashUndoStack.removeAll()
             let trashURL = try moveFileToTrashQuietly(file)
             trashUndoStack.append((file, file.url, trashURL))
             db.deleteFiles(paths: [file.path])
-            removeDeletedFilesFromResults([file.id])
+            removeDeletedFilesFromResults(paths: [file.path])
             selectedFileIDs.remove(file.id)
             focusedFileID = nil
         } catch {
@@ -327,7 +421,12 @@ final class AppState: ObservableObject {
             if let moved = fallbackResult.moved.first {
                 trashUndoStack.append((moved.file, moved.file.url, moved.trashURL))
                 db.deleteFiles(paths: [file.path])
-                removeDeletedFilesFromResults([file.id])
+                removeDeletedFilesFromResults(paths: [file.path])
+                selectedFileIDs.remove(file.id)
+                focusedFileID = nil
+            } else if !fallbackResult.alreadyMissing.isEmpty {
+                db.deleteFiles(paths: [file.path])
+                removeDeletedFilesFromResults(paths: [file.path])
                 selectedFileIDs.remove(file.id)
                 focusedFileID = nil
             } else {
@@ -387,8 +486,8 @@ final class AppState: ObservableObject {
         return candidate
     }
 
-    private func recycleWithWorkspace(_ files: [FileItem], originalErrors: [UUID: Error]) async -> (moved: [(file: FileItem, trashURL: URL)], errors: [String]) {
-        guard !files.isEmpty else { return ([], []) }
+    private func recycleWithWorkspace(_ files: [FileItem], originalErrors: [UUID: Error]) async -> (moved: [(file: FileItem, trashURL: URL)], alreadyMissing: [FileItem], errors: [String]) {
+        guard !files.isEmpty else { return ([], [], []) }
         let urls = files.map(\.url)
         logDelete("  RECYCLE FALLBACK for \(files.count) files")
         return await withCheckedContinuation { continuation in
@@ -405,7 +504,9 @@ final class AppState: ObservableObject {
                     }
                 }
 
-                let failedFiles = files.filter { file in !movedFiles.contains { $0.file.id == file.id } }
+                let unmovedFiles = files.filter { file in !movedFiles.contains { $0.file.id == file.id } }
+                let alreadyMissing = unmovedFiles.filter { !FileManager.default.fileExists(atPath: $0.path) }
+                let failedFiles = unmovedFiles.filter { FileManager.default.fileExists(atPath: $0.path) }
                 var errors = failedFiles.prefix(8).map { file in
                     if let error = originalErrors[file.id] {
                         return "\(file.name): \(error.localizedDescription)"
@@ -413,45 +514,60 @@ final class AppState: ObservableObject {
                     return "\(file.name): Could not move to Trash."
                 }
                 if let recycleError, errors.isEmpty {
-                    errors.append(recycleError.localizedDescription)
+                    if alreadyMissing.isEmpty {
+                        errors.append(recycleError.localizedDescription)
+                    }
                 }
                 let moreCount = max(0, failedFiles.count - 8)
                 if moreCount > 0 { errors.append("...and \(moreCount) more") }
-                continuation.resume(returning: (movedFiles, errors))
+                continuation.resume(returning: (movedFiles, alreadyMissing, errors))
             }
         }
     }
 
     private func safeDeletionIDs(from ids: Set<UUID>) -> Set<UUID> {
-        var safeIDs = ids
-        for group in duplicateGroups {
-            let groupIDs = Set(group.files.map(\.id))
-            let selectedInGroup = groupIDs.intersection(safeIDs)
-            if selectedInGroup.count == group.files.count, let keep = group.fileToPreserve {
-                safeIDs.remove(keep.id)
-                logDelete("[SafeDelete] preserving \(keep.name) because the whole group was selected")
+        var safePaths = Set(allFiles.filter { ids.contains($0.id) }.map(\.path))
+        var changed = true
+        while changed {
+            changed = false
+            for group in duplicateGroups {
+                let groupPaths = Set(group.files.map(\.path))
+                if groupPaths.isSubset(of: safePaths), let keep = fileToPreserve(in: group) {
+                    safePaths.remove(keep.path)
+                    logDelete("[SafeDelete] preserving \(keep.name) because the whole group was selected")
+                    changed = true
+                }
             }
         }
-        return safeIDs
+        return Set(allFiles.filter { ids.contains($0.id) && safePaths.contains($0.path) }.map(\.id))
     }
 
-    private func removeDeletedFilesFromResults(_ deletedIDs: Set<UUID>) {
+    private func uniqueFilesByPath(_ files: [FileItem]) -> [FileItem] {
+        var seenPaths = Set<String>()
+        return files.filter { seenPaths.insert($0.path).inserted }
+    }
+
+    private func removeDeletedFilesFromResults(paths: Set<String>) {
         duplicateGroups = duplicateGroups.compactMap { group in
             var g = group
-            g.files.removeAll { deletedIDs.contains($0.id) }
+            g.files.removeAll { paths.contains($0.path) }
             return g.files.count >= 2 ? g : nil
         }
         groupMap = Dictionary(uniqueKeysWithValues: duplicateGroups.map { ($0.id, $0) })
+        let liveGroupIDs = Set(duplicateGroups.map(\.id))
+        preservedFileIDs = preservedFileIDs.filter { liveGroupIDs.contains($0.key) }
         totalDuplicateGroups = duplicateGroups.count
     }
 
     private func publishDuplicateGroups() {
         duplicateGroups = groupMap.values.sorted { lhs, rhs in
-            let lhsPath = lhs.primaryFile?.path ?? ""
-            let rhsPath = rhs.primaryFile?.path ?? ""
+            let lhsPath = fileToPreserve(in: lhs)?.path ?? ""
+            let rhsPath = fileToPreserve(in: rhs)?.path ?? ""
             if lhsPath != rhsPath { return lhsPath < rhsPath }
             return lhs.id.uuidString < rhs.id.uuidString
         }
+        let liveGroupIDs = Set(duplicateGroups.map(\.id))
+        preservedFileIDs = preservedFileIDs.filter { liveGroupIDs.contains($0.key) }
         totalDuplicateGroups = duplicateGroups.count
     }
 

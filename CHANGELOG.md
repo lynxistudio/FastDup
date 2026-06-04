@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.5 - 2026-06-02
+
+### Added
+
+- Added per-group `Keep` selection so users can choose which duplicate copy is preserved.
+- Switching `Keep` after selecting duplicates automatically retargets the delete selection to the other files in that group.
+
+## 1.1.4 - 2026-06-02
+
+### Fixed
+
+- Prevented duplicate result paths from being processed more than once during deletion.
+- Merged overlapping duplicate groups while scanning so one physical file is listed consistently.
+- Treated files that are already gone as completed cleanup instead of reporting a false delete failure.
+
 ## 1.1.3 - 2026-05-26
 
 First public release of FastDup as a downloadable macOS app.

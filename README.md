@@ -13,7 +13,7 @@
 ## 🚀 Quick Start
 
 ### Download & Install
-1. **Download the latest release**: [FastDup-1.1.3-macOS.zip](https://github.com/lynxistudio/fastdup/releases/latest)
+1. **Download the latest release**: [FastDup-1.1.5-macOS.zip](https://github.com/lynxistudio/fastdup/releases/latest)
 2. **Unzip** the downloaded file
 3. **Move** `FastDup.app` to your `Applications` folder
 4. **First launch**: Right-click the app and select "Open" (macOS may require this for ad-hoc signed apps)

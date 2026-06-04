@@ -562,7 +562,7 @@ struct ResultsThumbnailView: View {
 
                     LazyVGrid(columns: columns, spacing: 8) {
                         ForEach(group.files) { file in
-                            ThumbnailCell(file: file)
+                            ThumbnailCell(file: file, group: group)
                         }
                     }
                     .padding(.horizontal, 12)
@@ -588,7 +588,7 @@ struct GroupHeaderView: View {
             Text("\(group.files.count) duplicates")
                 .font(.system(size: 12, weight: .semibold))
 
-            Text("~\(group.savingsFormatted)")
+            Text("~\(appState.savingsFormatted(for: group))")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
 
@@ -629,6 +629,7 @@ struct FileRowView: View {
 
     var isSelected: Bool { appState.selectedFileIDs.contains(file.id) }
     var isFocused: Bool { appState.focusedFileID == file.id }
+    var isPreserved: Bool { appState.isPreserved(file, in: group) }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -658,6 +659,8 @@ struct FileRowView: View {
 
             // Size & metadata
             HStack(spacing: 6) {
+                keepButton
+
                 Text(file.sizeFormatted)
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
@@ -707,11 +710,17 @@ struct FileRowView: View {
                 NSPasteboard.general.setString(file.path, forType: .string)
             }
             Divider()
+            Button("Keep This File") {
+                appState.setFileToPreserve(file.id, in: group.id)
+            }
+            .disabled(isPreserved)
+            Divider()
             Button("Rename...") { showRenameSheet = true }
             Divider()
             Button("Move to Trash") {
                 appState.deleteSingleFile(file)
             }
+            .disabled(isPreserved)
         }
         .sheet(isPresented: $showRenameSheet) {
             RenameSheetView(originalName: file.name, fileURL: file.url, isPresented: $showRenameSheet)
@@ -720,7 +729,11 @@ struct FileRowView: View {
 
     var selectionCheckbox: some View {
         ZStack {
-            if isSelected {
+            if isPreserved {
+                Image(systemName: "checkmark.shield.fill")
+                    .foregroundColor(.green)
+                    .font(.system(size: 14))
+            } else if isSelected {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.accentColor)
                     .font(.system(size: 14))
@@ -731,6 +744,31 @@ struct FileRowView: View {
             }
         }
         .onTapGesture { appState.toggleSelection(file.id) }
+        .help(isPreserved ? "Kept file. Choose another Keep file before deleting this one." : "Select for deletion")
+    }
+
+    var keepButton: some View {
+        Button {
+            appState.setFileToPreserve(file.id, in: group.id)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: isPreserved ? "checkmark.shield.fill" : "shield")
+                    .font(.system(size: 9, weight: .medium))
+                Text("Keep")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(keepBackground)
+            .foregroundColor(isPreserved ? .green : .secondary)
+        }
+        .buttonStyle(.borderless)
+        .disabled(isPreserved)
+        .help(isPreserved ? "This file will be kept" : "Keep this file and select the others in this group")
+    }
+
+    var keepBackground: some ShapeStyle {
+        isPreserved ? .green.opacity(0.12) : .secondary.opacity(0.08)
     }
 
     var rowBackground: some View {
@@ -766,10 +804,12 @@ struct FileRowView: View {
 
 struct ThumbnailCell: View {
     let file: FileItem
+    let group: DuplicateGroup
     @EnvironmentObject var appState: AppState
 
     var isSelected: Bool { appState.selectedFileIDs.contains(file.id) }
     var isFocused: Bool { appState.focusedFileID == file.id }
+    var isPreserved: Bool { appState.isPreserved(file, in: group) }
 
     var body: some View {
         VStack(spacing: 4) {
@@ -779,7 +819,13 @@ struct ThumbnailCell: View {
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 64, height: 64)
 
-                if isSelected {
+                if isPreserved {
+                    Image(systemName: "checkmark.shield.fill")
+                        .foregroundColor(.green)
+                        .font(.system(size: 14))
+                        .background(Circle().fill(.white).frame(width: 12, height: 12))
+                        .offset(x: 4, y: -4)
+                } else if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.accentColor)
                         .font(.system(size: 14))
@@ -796,6 +842,17 @@ struct ThumbnailCell: View {
             Text(file.sizeFormatted)
                 .font(.system(size: 9))
                 .foregroundColor(.secondary)
+
+            Button {
+                appState.setFileToPreserve(file.id, in: group.id)
+            } label: {
+                Label("Keep", systemImage: isPreserved ? "checkmark.shield.fill" : "shield")
+                    .font(.system(size: 9, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            .foregroundColor(isPreserved ? .green : .secondary)
+            .disabled(isPreserved)
+            .help(isPreserved ? "This file will be kept" : "Keep this file and select the others in this group")
         }
         .padding(4)
         .background(
@@ -804,7 +861,9 @@ struct ThumbnailCell: View {
         )
         .onTapGesture {
             appState.setFocus(file.id)
-            appState.toggleSelection(file.id)
+            if !isPreserved {
+                appState.toggleSelection(file.id)
+            }
         }
     }
 }

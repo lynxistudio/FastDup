@@ -10,8 +10,8 @@ ICONSET_DIR="$ROOT_DIR/build/FastDupIcon.iconset"
 ICON_PNG="$ROOT_DIR/Assets/FastDupIcon-1024.png"
 MODULE_CACHE_DIR="${CLANG_MODULE_CACHE_PATH:-$ROOT_DIR/.build/module-cache}"
 
-VERSION="${VERSION:-1.1.3}"
-BUILD="${BUILD:-5}"
+VERSION="${VERSION:-1.1.5}"
+BUILD="${BUILD:-7}"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$ICONSET_DIR" "$MODULE_CACHE_DIR"
